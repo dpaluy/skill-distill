@@ -7,7 +7,7 @@ session and name a **student**: an agent harness plus a model, for example omp w
 The teacher then loops:
 
 1. reads the session and writes a skill for the student;
-2. starts the student in tmux, on a fresh copy of the starting state, with the original prompt and the skill;
+2. starts the student in a detached process, on a fresh copy of the starting state, with the original prompt and the skill;
 3. compares what the student produced with what the reference produced;
 4. finds the first place the student went wrong and fixes the skill there;
 5. runs again, three trials per version, until the student matches the reference.
@@ -26,7 +26,7 @@ ln -s "$PWD/skill-distill/skills/skill-distill" ~/.claude/skills/skill-distill  
 ln -s "$PWD/skill-distill/skills/skill-distill" ~/.agents/skills/skill-distill    # Codex
 ```
 
-Requirements: `tmux`, `git`, Python 3.10+, and the student harness installed and pointed at its model.
+Requirements: `git`, Bash, Perl, Python 3.10+, and the student harness installed and pointed at its model.
 For web results, `pip install playwright pillow && playwright install chromium`.
 
 ## Use
@@ -35,8 +35,9 @@ At the end of a session that went well:
 
 > distill this session into a skill for omp with deepseek-v4.1-flash on my local server
 
-The teacher follows [`skills/skill-distill/SKILL.md`](skills/skill-distill/SKILL.md). You can watch the
-students work with `tmux attach -t distill-<task>`.
+The teacher follows [`skills/skill-distill/SKILL.md`](skills/skill-distill/SKILL.md). Trials keep running
+when `distill.py trial` exits. To watch them, run the printed `tail -f` command in any terminal or in a
+Rex or Herdr pane.
 
 ## What's in it
 

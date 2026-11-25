@@ -5,7 +5,7 @@ The teacher (the agent following SKILL.md) decides what goes in the skill and ju
 This script does the bookkeeping that must not drift between iterations:
 
   init      create a run: reference summary, frozen prompt, starting state, empty student skill
-  trial     freeze the current skill as iteration N and start K student sessions in tmux
+  trial     freeze the current skill as iteration N and start K detached student sessions
   status    show which trials are still running
   wait      block until an iteration's trials exit (or timeout)
   evidence  collect what each trial produced: trace summary, files, diff, checks.sh output
@@ -23,7 +23,7 @@ Run layout (RUN is any directory, e.g. runs/<task>):
   iters/NN/tK/      workspace/, trace/, prompt.md, run.sh, exit_code, evidence/, verdict.json
   ledger.jsonl      one line per verdict, and the user's final decision
 """
-import argparse, datetime as dt, html, json, os, shutil, subprocess, sys, time
+import argparse, datetime as dt, html, json, os, shlex, shutil, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -102,7 +102,7 @@ def cmd_init(a):
     name = a.name or "reproduce-" + run.name
     cfg = {"created": now(), "name": name, "adapter": adapter, "model": model,
            "student_args": a.student_args or "", "env": dict(kv.split("=", 1) for kv in a.env or []),
-           "base": base, "setup": a.setup or "", "tmux": a.tmux or f"distill-{run.name}",
+           "base": base, "setup": a.setup or "",
            "timeout_min": a.timeout_min, "reference_log": str(Path(a.reference).resolve()) if a.reference else "",
            "reference_workspace": str(Path(a.reference_workspace).resolve()) if a.reference_workspace else ""}
     if Path(a.prompt).resolve() != (run / "prompt.md").resolve():
@@ -129,10 +129,9 @@ def cmd_trial(a):
     if it.exists():
         raise SystemExit(f"{it} exists; use a new --iter")
     shutil.copytree(run / "skill", it / "skill")
-    session = cfg["tmux"]
-    if sh(["tmux", "has-session", "-t", session], timeout=10).returncode:
-        sh(["tmux", "new-session", "-d", "-s", session, "-n", "ledger", f"tail -F {run}/ledger.jsonl"], timeout=10)
+    adapter = ADAPTERS / (cfg["adapter"] + ".sh")
     prompt = (run / "prompt.md").read_text().rstrip() + SKILL_POINTER.format(name=cfg["name"])
+    logs = []
     for k in range(1, a.k + 1):
         t = it / f"t{k}"
         make_workspace(cfg, t / "workspace")
@@ -144,22 +143,26 @@ def cmd_trial(a):
         (t / "prompt.md").write_text(prompt)
         env = {"WORKSPACE": t / "workspace", "PROMPT_FILE": t / "prompt.md", "MODEL": cfg["model"],
                "TRACE_DIR": t / "trace", "STUDENT_ARGS": cfg["student_args"], "TRACK_EXEMPT": "1", **cfg["env"]}
-        exports = "\n".join(f"export {k}={json.dumps(str(v))}" for k, v in env.items())
+        exports = "\n".join(f"export {key}={shlex.quote(str(value))}" for key, value in env.items())
         secs = int(cfg["timeout_min"] * 60)
-        (t / "run.sh").write_text(f"""#!/usr/bin/env bash
+        trial_dir = shlex.quote(str(t))
+        script = t / "run.sh"
+        script.write_text(f"""#!/usr/bin/env bash
 {exports}
-date -Iseconds > {t}/started_at
-perl -e 'alarm {secs}; exec @ARGV' bash {ADAPTERS}/{cfg['adapter']}.sh 2>&1 | tee {t}/stdout.log
-echo ${{PIPESTATUS[0]}} > {t}/exit_code
-date -Iseconds > {t}/ended_at
-echo "== trial done (exit $(cat {t}/exit_code)) =="
+date -Iseconds > {trial_dir}/started_at
+perl -e 'alarm {secs}; exec @ARGV' bash {shlex.quote(str(adapter))}
+rc=$?
+date -Iseconds > {trial_dir}/ended_at
+echo "$rc" > {trial_dir}/exit_code
 """)
-        win = f"i{n:02d}-t{k}"
-        r = sh(["tmux", "new-window", "-d", "-t", session, "-n", win, f"bash {t}/run.sh; sleep 86400"], timeout=10)
-        if r.returncode:
-            raise SystemExit(f"tmux failed: {r.stderr}")
-        print(f"started {session}:{win}  ->  {t}")
-    print(f"watch: tmux attach -t {session}")
+        log = t / "stdout.log"
+        with log.open("wb") as output:
+            subprocess.Popen(["bash", str(script)], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+        logs.append(shlex.quote(str(log)))
+        print(f"started i{n:02d}/t{k}  ->  {t}")
+    if logs:
+        print(f"watch: tail -f {' '.join(logs)}")
 
 
 def trial_dirs(run, n):
@@ -347,7 +350,7 @@ def main():
     p.add_argument("--reference-workspace", help="where the reference's result lives (for evidence)")
     p.add_argument("--name"); p.add_argument("--student-args"); p.add_argument("--env", action="append")
     p.add_argument("--setup", help="shell command run in every fresh workspace before the student starts")
-    p.add_argument("--tmux"); p.add_argument("--timeout-min", type=float, default=90)
+    p.add_argument("--timeout-min", type=float, default=90)
     p.add_argument("--force", action="store_true")
     p = sub.add_parser("trial"); p.add_argument("run"); p.add_argument("--iter", type=int); p.add_argument("-k", type=int, default=3)
     for c in ("status", "evidence", "report"):
